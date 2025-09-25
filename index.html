@@ -6,13 +6,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
   <style>
-    #map { width: 100%; height: 100vh; margin:0; padding:0; }
-    .user-marker { width:36px; height:36px; display:flex; align-items:center; justify-content:center; }
-    .user-marker .arrow { width:28px; height:28px; transform-origin:center center; transition: transform 120ms linear; }
+    #map { width: 100%; height: 100vh; margin: 0; padding: 0; }
+    .user-marker { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; }
+    .user-marker .arrow {
+      width: 28px; height: 28px;
+      transform-origin: center center;
+      transition: transform 0.25s ease-out;
+    }
     #compass-btn {
       position: absolute;
-      top: 12px;
-      right: 12px;
+      top: 12px; right: 12px;
       z-index: 1000;
       padding: 8px 10px;
       background: white;
@@ -31,10 +34,9 @@
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script>
     const radius = 250; // meters for tree search
-    const fetchThreshold = 25; // meters: refetch trees only when moved more than this
-    const appToken = "8Y6BJoOEjSnxgyvODpDnOR5Yj"; // keep your token
+    const fetchThreshold = 25; // meters before refetching trees
+    const appToken = "8Y6BJoOEjSnxgyvODpDnOR5Yj";
 
-    // map and layers
     const map = L.map("map").setView([51.045, -114.071], 16);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
@@ -43,80 +45,66 @@
 
     const treeLayer = L.layerGroup().addTo(map);
 
-    // state
     let userMarker = null;
     let firstFix = true;
     let lastFetchLat = null;
     let lastFetchLon = null;
-    let lastHeading = null; // degrees 0..360
-    let watchId = null;
+    let currentHeading = null; // smoothed heading
 
-    // helper: distance in meters (haversine)
     function distanceMeters(lat1, lon1, lat2, lon2) {
       const toRad = d => d * Math.PI / 180;
       const R = 6371000;
       const dLat = toRad(lat2 - lat1);
       const dLon = toRad(lon2 - lon1);
-      const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-                Math.sin(dLon/2) * Math.sin(dLon/2);
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-      return R * c;
+      const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     }
 
-    // create a divIcon containing an SVG arrow (we rotate the svg element)
     function createUserIcon() {
       const html = `
         <div class="user-marker">
-          <svg class="arrow" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <!-- simple arrow pointing up (north) by default -->
-            <path d="M12 2 L16 12 L12 9 L8 12 Z" fill="#d33"/>
-            <circle cx="12" cy="17" r="2" fill="#d33"/>
+          <svg class="arrow" viewBox="0 0 24 24">
+            <path d="M12 2 L16 12 L12 9 L8 12 Z" fill="#007aff"/>
+            <circle cx="12" cy="17" r="3" fill="#007aff"/>
           </svg>
         </div>`;
-      return L.divIcon({
-        html,
-        className: '', // avoid default leaflet icon styles
-        iconSize: [36, 36],
-        iconAnchor: [18, 18]
-      });
+      return L.divIcon({ html, className: '', iconSize: [36,36], iconAnchor: [18,18] });
     }
 
-    // plain marker icon fallback
-    const defaultIcon = L.icon({
-      iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-      iconSize: [25, 41],
-      iconAnchor: [12, 41]
-    });
+    function smoothHeading(newHeading) {
+      if (currentHeading === null) {
+        currentHeading = newHeading;
+        return newHeading;
+      }
+      let delta = newHeading - currentHeading;
+      if (delta > 180) delta -= 360;
+      if (delta < -180) delta += 360;
+      currentHeading += delta * 0.15; // smoothing factor
+      if (currentHeading < 0) currentHeading += 360;
+      if (currentHeading >= 360) currentHeading -= 360;
+      return currentHeading;
+    }
 
-    // update or create the user marker, rotate arrow if available
     function updateUserMarker(lat, lon, heading) {
       if (!userMarker) {
-        // create marker with divIcon (arrow). If no heading, arrow will still be present but we can hide it if desired.
         userMarker = L.marker([lat, lon], { icon: createUserIcon() }).addTo(map);
         userMarker.bindPopup("You are here");
       } else {
         userMarker.setLatLng([lat, lon]);
       }
-
-      // rotate arrow if element exists
       const el = userMarker.getElement && userMarker.getElement();
       if (el) {
         const arrow = el.querySelector('.arrow');
         if (arrow) {
-          if (heading === null || heading === undefined || isNaN(heading)) {
-            // hide arrow if heading unknown by setting opacity low
-            arrow.style.opacity = 0.25;
-            arrow.style.transform = `rotate(0deg)`;
-          } else {
+          if (heading != null && !isNaN(heading)) {
+            const smoothed = smoothHeading(heading);
             arrow.style.opacity = 1;
-            // heading is degrees clockwise from north; rotate svg to point in that heading
-            // some device APIs give heading relative to true north; this should work in most cases.
-            arrow.style.transform = `rotate(${heading}deg)`;
+            arrow.style.transform = `rotate(${smoothed}deg)`;
+          } else {
+            arrow.style.opacity = 0.25;
           }
         }
       }
-
       if (firstFix) {
         map.setView([lat, lon], 16);
         userMarker.openPopup();
@@ -124,149 +112,84 @@
       }
     }
 
-    // load trees for given lat/lon and add to treeLayer
     function loadTrees(lat, lon) {
       treeLayer.clearLayers();
       const url = `https://data.calgary.ca/resource/tfs4-3wwa.json?$$app_token=${appToken}&$where=within_circle(point, ${lat}, ${lon}, ${radius})&$limit=500`;
-
-      fetch(url)
-        .then(r => r.json())
-        .then(data => {
-          if (!Array.isArray(data)) {
-            console.error("API returned:", data);
-            return;
+      fetch(url).then(r=>r.json()).then(data=>{
+        if (!Array.isArray(data)) return;
+        data.forEach(tree=>{
+          if (tree.point && tree.point.coordinates) {
+            const [tLon, tLat] = tree.point.coordinates;
+            const m = L.circleMarker([tLat, tLon], { radius:5, color:"green", fillOpacity:0.7 }).addTo(treeLayer);
+            m.bindPopup(`
+              <b>${tree.common_name || tree.scientific_name || "Unknown"}</b><br>
+              Asset ID: ${tree.asset_id || "N/A"}<br>
+              Scientific Name: ${tree.scientific_name || "N/A"}<br>
+              DBH (cm): ${tree.dbh_cm || "N/A"}<br>
+              Mature Size: ${tree.mature_size || "N/A"}<br>
+              Condition: ${tree.tree_condition_rating_perc || "N/A"}%
+            `);
           }
-          data.forEach(tree => {
-            if (tree.point && tree.point.coordinates) {
-              const [tLon, tLat] = tree.point.coordinates;
-              const marker = L.circleMarker([tLat, tLon], {
-                radius: 5,
-                color: "green",
-                fillOpacity: 0.7
-              }).addTo(treeLayer);
-
-              const popupHtml = `
-                <b>${tree.common_name || tree.scientific_name || "Unknown"}</b><br>
-                Asset ID: ${tree.asset_id || "N/A"}<br>
-                Scientific Name: ${tree.scientific_name || "N/A"}<br>
-                DBH (cm): ${tree.dbh_cm || "N/A"}<br>
-                Mature Size: ${tree.mature_size || "N/A"}<br>
-                Condition: ${tree.tree_condition_rating_perc || "N/A"}%
-              `;
-              marker.bindPopup(popupHtml);
-            }
-          });
-        })
-        .catch(err => console.error("Error loading trees:", err));
+        });
+      });
     }
 
-    // Attempt to set heading from DeviceOrientation (fall back to geolocation heading)
+    // orientation handling
     function handleDeviceOrientation(e) {
-      // iOS Safari may expose webkitCompassHeading
       let heading = null;
-      if (typeof e.webkitCompassHeading !== 'undefined' && e.webkitCompassHeading !== null) {
-        // webkitCompassHeading is already degrees clockwise from north
-        heading = e.webkitCompassHeading;
-      } else if (e.absolute === true || typeof e.absolute === 'undefined') {
-        // Many Android/Chrome provide alpha where 0 is north.
-        // Depending on device orientation/orientation-lock, you may need corrections — this simple approach works in many cases:
-        if (typeof e.alpha === 'number') {
-          // alpha increases clockwise; to make arrow point in facing direction we often need to invert:
-          heading = 360 - e.alpha;
-        }
+      if (typeof e.webkitCompassHeading === 'number') {
+        heading = e.webkitCompassHeading; // iOS
+      } else if (typeof e.alpha === 'number') {
+        heading = 360 - e.alpha; // Android approx
       }
-      if (heading !== null && !isNaN(heading)) {
-        lastHeading = heading;
-        // if we already have a user marker position, update its rotation
-        if (userMarker) {
-          const latlng = userMarker.getLatLng();
-          updateUserMarker(latlng.lat, latlng.lng, heading);
-        }
+      if (heading != null && !isNaN(heading)) {
+        const latlng = userMarker && userMarker.getLatLng();
+        if (latlng) updateUserMarker(latlng.lat, latlng.lng, heading);
       }
     }
 
-    // Try to enable device orientation (for iOS it requires a user gesture)
-    function enableDeviceOrientation() {
-      const btn = document.getElementById('compass-btn');
-      // For iOS 13+ we need to request permission
+    function enableCompass() {
       if (typeof DeviceOrientationEvent !== 'undefined' &&
           typeof DeviceOrientationEvent.requestPermission === 'function') {
-        DeviceOrientationEvent.requestPermission().then(response => {
-          if (response === 'granted') {
+        DeviceOrientationEvent.requestPermission().then(res=>{
+          if (res==='granted') {
             window.addEventListener('deviceorientation', handleDeviceOrientation, true);
-            btn.style.display = 'none';
-          } else {
-            console.warn('DeviceOrientation permission not granted:', response);
+            document.getElementById('compass-btn').style.display='none';
           }
-        }).catch(err => {
-          console.warn('DeviceOrientation.requestPermission error:', err);
         });
       } else {
-        // non-iOS: just listen
         window.addEventListener('deviceorientation', handleDeviceOrientation, true);
-        btn.style.display = 'none';
+        document.getElementById('compass-btn').style.display='none';
       }
     }
 
-    // show compass enable button only when necessary (iOS)
-    (function maybeShowCompassButton() {
-      const btn = document.getElementById('compass-btn');
-      if (typeof DeviceOrientationEvent !== 'undefined' &&
-          typeof DeviceOrientationEvent.requestPermission === 'function') {
-        // iOS style: show button so user can tap to grant sensor permission
-        btn.style.display = 'block';
-        btn.addEventListener('click', enableDeviceOrientation);
-      } else {
-        // non-iOS: install listener immediately (may not need permission)
-        window.addEventListener('deviceorientation', handleDeviceOrientation, true);
-      }
-    })();
+    // show compass button for iOS
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+      document.getElementById('compass-btn').style.display='block';
+      document.getElementById('compass-btn').addEventListener('click', enableCompass);
+    } else {
+      enableCompass();
+    }
 
-    // Start geolocation watch to update position and fetch trees when moving
-    if ('geolocation' in navigator) {
-      watchId = navigator.geolocation.watchPosition(pos => {
+    // watch position
+    if (navigator.geolocation) {
+      navigator.geolocation.watchPosition(pos=>{
         const lat = pos.coords.latitude;
         const lon = pos.coords.longitude;
-
-        // use geolocation heading if available (useful while moving)
-        const geoHeading = (typeof pos.coords.heading === 'number' && !isNaN(pos.coords.heading)) ? pos.coords.heading : null;
-        const effectiveHeading = (geoHeading !== null) ? geoHeading : lastHeading;
-
-        updateUserMarker(lat, lon, effectiveHeading);
-
-        // fetch trees if first time or moved enough
-        if (lastFetchLat === null || distanceMeters(lat, lon, lastFetchLat, lastFetchLon) > fetchThreshold) {
-          lastFetchLat = lat;
-          lastFetchLon = lon;
+        const gpsHeading = (typeof pos.coords.heading === 'number') ? pos.coords.heading : null;
+        updateUserMarker(lat, lon, gpsHeading);
+        if (lastFetchLat===null || distanceMeters(lat,lon,lastFetchLat,lastFetchLon)>fetchThreshold) {
+          lastFetchLat=lat; lastFetchLon=lon;
           loadTrees(lat, lon);
         }
-
-      }, err => {
-        console.warn("Geolocation watch error:", err && err.message ? err.message : err);
-        // If geolocation fails, keep map at default and load trees around default center
-        if (lastFetchLat === null) {
-          lastFetchLat = 51.045;
-          lastFetchLon = -114.071;
-          loadTrees(lastFetchLat, lastFetchLon);
-        }
-      }, {
-        enableHighAccuracy: true,
-        maximumAge: 1000,
-        timeout: 10000
-      });
+      }, err=>{
+        console.warn("Geolocation error:", err.message);
+        if (lastFetchLat===null) loadTrees(51.045,-114.071);
+      }, { enableHighAccuracy:true, maximumAge:1000, timeout:10000 });
     } else {
-      // no geolocation available
-      lastFetchLat = 51.045;
-      lastFetchLon = -114.071;
-      loadTrees(lastFetchLat, lastFetchLon);
-      console.warn("Geolocation not supported by this browser.");
+      loadTrees(51.045,-114.071);
     }
-
-    // Optional: free resources on page unload
-    window.addEventListener('beforeunload', () => {
-      if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
-      window.removeEventListener('deviceorientation', handleDeviceOrientation);
-    });
   </script>
 </body>
 </html>
