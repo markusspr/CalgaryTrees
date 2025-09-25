@@ -1,29 +1,23 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Calgary Trees Map</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <title>Calgary Trees Map — Compass Fix</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
   <style>
-    #map { width: 100%; height: 100vh; margin: 0; padding: 0; }
-    .user-marker { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; }
+    html,body,#map { height: 100%; margin: 0; padding: 0; }
+    #map { width: 100%; height: 100vh; }
+    .user-marker { width: 40px; height: 40px; display:flex; align-items:center; justify-content:center; }
     .user-marker .arrow {
-      width: 28px; height: 28px;
-      transform-origin: center center;
-      transition: transform 0.25s ease-out;
+      width: 30px; height: 30px; transform-origin: center center;
+      transition: transform 0.18s cubic-bezier(.22,.98,.3,.99); /* smooth, responsive */
+      will-change: transform;
     }
     #compass-btn {
-      position: absolute;
-      top: 12px; right: 12px;
-      z-index: 1000;
-      padding: 8px 10px;
-      background: white;
-      border: 1px solid rgba(0,0,0,0.15);
-      border-radius: 6px;
-      font-size: 13px;
-      cursor: pointer;
-      box-shadow: 0 1px 6px rgba(0,0,0,0.12);
+      position: absolute; top: 12px; right: 12px; z-index: 1200;
+      padding: 8px 10px; border-radius: 6px; background: #fff;
+      border: 1px solid rgba(0,0,0,0.12); font-size: 13px; box-shadow: 0 1px 6px rgba(0,0,0,0.08);
     }
   </style>
 </head>
@@ -33,26 +27,30 @@
 
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script>
-    const radius = 250; // meters for tree search
-    const fetchThreshold = 25; // meters before refetching trees
-    const appToken = "8Y6BJoOEjSnxgyvODpDnOR5Yj";
+  (function(){
+    // ----------------- Config -----------------
+    const RADIUS_METERS = 250;
+    const FETCH_THRESHOLD_METERS = 25;
+    const APP_TOKEN = "8Y6BJoOEjSnxgyvODpDnOR5Yj";
+    const SMOOTH_FACTOR = 0.18; // 0 = instant, 0.18 = smooth but responsive
+    const GPS_SPEED_THRESHOLD = 0.8; // m/s to treat GPS heading as reliable
 
-    const map = L.map("map").setView([51.045, -114.071], 16);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-      attribution: "&copy; OpenStreetMap contributors"
-    }).addTo(map);
-
-    const treeLayer = L.layerGroup().addTo(map);
-
-    let userMarker = null;
-    let firstFix = true;
-    let lastFetchLat = null;
-    let lastFetchLon = null;
-    let currentHeading = null; // smoothed heading
+    // ----------------- Utilities -----------------
+    const norm360 = a => {
+      a = a % 360;
+      if (a < 0) a += 360;
+      return a;
+    };
+    function angDiff(a, b) { // smallest signed difference a - b in degrees
+      let d = a - b;
+      if (d > 180) d -= 360;
+      if (d < -180) d += 360;
+      return d;
+    }
+    function angAbsDiff(a,b) { return Math.abs(angDiff(norm360(a), norm360(b))); }
 
     function distanceMeters(lat1, lon1, lat2, lon2) {
-      const toRad = d => d * Math.PI / 180;
+      const toRad = d => d * Math.PI/180;
       const R = 6371000;
       const dLat = toRad(lat2 - lat1);
       const dLon = toRad(lon2 - lon1);
@@ -60,49 +58,80 @@
       return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     }
 
-    function createUserIcon() {
-      const html = `
+    function getScreenAngle() {
+      let angle = 0;
+      if (screen && screen.orientation && typeof screen.orientation.angle === 'number') angle = screen.orientation.angle;
+      else if (typeof window.orientation === 'number') angle = window.orientation;
+      return norm360(Number(angle) || 0);
+    }
+
+    // ----------------- Map + layers -----------------
+    const map = L.map('map').setView([51.045, -114.071], 16);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+    const treeLayer = L.layerGroup().addTo(map);
+
+    // ----------------- User marker + state -----------------
+    let userMarker = null;
+    let firstFix = true;
+    let lastFetchLat = null;
+    let lastFetchLon = null;
+    let smoothedHeading = null; // internal smoothed heading in degrees
+    let headingCalibration = null; // picks which candidate formula to use (1..4)
+    let calibrated = false;
+    let lastGpsHeading = null; // most recent gps heading
+    let lastGpsSpeed = null;
+
+    function createUserIconHtml() {
+      return `
         <div class="user-marker">
-          <svg class="arrow" viewBox="0 0 24 24">
+          <svg class="arrow" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <path d="M12 2 L16 12 L12 9 L8 12 Z" fill="#007aff"/>
             <circle cx="12" cy="17" r="3" fill="#007aff"/>
           </svg>
         </div>`;
-      return L.divIcon({ html, className: '', iconSize: [36,36], iconAnchor: [18,18] });
+    }
+    function createUserIcon() {
+      return L.divIcon({ html: createUserIconHtml(), className: '', iconSize: [40,40], iconAnchor: [20,20] });
     }
 
-    function smoothHeading(newHeading) {
-      if (currentHeading === null) {
-        currentHeading = newHeading;
-        return newHeading;
+    function smoothAndApplyHeading(newH) {
+      newH = norm360(newH);
+      if (smoothedHeading === null) {
+        smoothedHeading = newH;
+      } else {
+        let delta = angDiff(newH, smoothedHeading);
+        smoothedHeading = norm360(smoothedHeading + delta * SMOOTH_FACTOR);
       }
-      let delta = newHeading - currentHeading;
-      if (delta > 180) delta -= 360;
-      if (delta < -180) delta += 360;
-      currentHeading += delta * 0.15; // smoothing factor
-      if (currentHeading < 0) currentHeading += 360;
-      if (currentHeading >= 360) currentHeading -= 360;
-      return currentHeading;
+      // apply to element
+      if (userMarker) {
+        const el = userMarker.getElement && userMarker.getElement();
+        if (el) {
+          const arrow = el.querySelector('.arrow');
+          if (arrow) {
+            arrow.style.opacity = 1;
+            arrow.style.transform = `rotate(${smoothedHeading}deg)`;
+          }
+        }
+      }
     }
 
     function updateUserMarker(lat, lon, heading) {
       if (!userMarker) {
         userMarker = L.marker([lat, lon], { icon: createUserIcon() }).addTo(map);
-        userMarker.bindPopup("You are here");
+        userMarker.bindPopup('You are here');
       } else {
         userMarker.setLatLng([lat, lon]);
       }
-      const el = userMarker.getElement && userMarker.getElement();
-      if (el) {
-        const arrow = el.querySelector('.arrow');
-        if (arrow) {
-          if (heading != null && !isNaN(heading)) {
-            const smoothed = smoothHeading(heading);
-            arrow.style.opacity = 1;
-            arrow.style.transform = `rotate(${smoothed}deg)`;
-          } else {
-            arrow.style.opacity = 0.25;
-          }
+      // If heading provided, apply smoothing; otherwise dim arrow
+      if (typeof heading === 'number' && !isNaN(heading)) {
+        smoothAndApplyHeading(heading);
+      } else {
+        const el = userMarker.getElement && userMarker.getElement();
+        if (el) {
+          const arrow = el.querySelector('.arrow');
+          if (arrow) { arrow.style.opacity = 0.28; }
         }
       }
       if (firstFix) {
@@ -112,84 +141,199 @@
       }
     }
 
+    // ----------------- Tree fetching -----------------
     function loadTrees(lat, lon) {
       treeLayer.clearLayers();
-      const url = `https://data.calgary.ca/resource/tfs4-3wwa.json?$$app_token=${appToken}&$where=within_circle(point, ${lat}, ${lon}, ${radius})&$limit=500`;
+      const url = `https://data.calgary.ca/resource/tfs4-3wwa.json?$$app_token=${APP_TOKEN}&$where=within_circle(point, ${lat}, ${lon}, ${RADIUS_METERS})&$limit=500`;
       fetch(url).then(r=>r.json()).then(data=>{
         if (!Array.isArray(data)) return;
         data.forEach(tree=>{
           if (tree.point && tree.point.coordinates) {
             const [tLon, tLat] = tree.point.coordinates;
-            const m = L.circleMarker([tLat, tLon], { radius:5, color:"green", fillOpacity:0.7 }).addTo(treeLayer);
+            const m = L.circleMarker([tLat, tLon], { radius:5, color:'green', fillOpacity:0.7 }).addTo(treeLayer);
             m.bindPopup(`
-              <b>${tree.common_name || tree.scientific_name || "Unknown"}</b><br>
-              Asset ID: ${tree.asset_id || "N/A"}<br>
-              Scientific Name: ${tree.scientific_name || "N/A"}<br>
-              DBH (cm): ${tree.dbh_cm || "N/A"}<br>
-              Mature Size: ${tree.mature_size || "N/A"}<br>
-              Condition: ${tree.tree_condition_rating_perc || "N/A"}%
+              <b>${tree.common_name || tree.scientific_name || 'Unknown'}</b><br>
+              Asset ID: ${tree.asset_id || 'N/A'}<br>
+              Scientific Name: ${tree.scientific_name || 'N/A'}<br>
+              DBH (cm): ${tree.dbh_cm || 'N/A'}<br>
+              Mature Size: ${tree.mature_size || 'N/A'}<br>
+              Condition: ${tree.tree_condition_rating_perc || 'N/A'}%
             `);
           }
         });
-      });
+      }).catch(e=>console.warn('Tree fetch error', e));
     }
 
-    // orientation handling
+    // ----------------- Device orientation calibration -----------------
+    // We'll compute four candidate formulas and pick the one that matches GPS heading when available.
+    // Candidate formulas (given alpha and screenAngle):
+    // 1: h = alpha + screenAngle
+    // 2: h = alpha - screenAngle
+    // 3: h = 360 - alpha + screenAngle
+    // 4: h = 360 - alpha - screenAngle
+    function computeCandidates(alpha, screenAngle) {
+      return [
+        norm360(alpha + screenAngle),
+        norm360(alpha - screenAngle),
+        norm360(360 - alpha + screenAngle),
+        norm360(360 - alpha - screenAngle)
+      ];
+    }
+
+    function maybeCalibrateDeviceOrientation(alpha) {
+      if (typeof alpha !== 'number' || isNaN(alpha)) return;
+      if (lastGpsHeading === null || lastGpsSpeed === null) return; // need gps sample
+      if (lastGpsSpeed < GPS_SPEED_THRESHOLD) return; // only calibrate while moving
+      const screenAngle = getScreenAngle();
+      const candidates = computeCandidates(alpha, screenAngle);
+      // compute absolute diffs
+      const diffs = candidates.map(c => angAbsDiff(c, lastGpsHeading));
+      // pick best candidate if clearly better
+      const min = Math.min(...diffs);
+      const idx = diffs.indexOf(min); // 0..3
+      // require clear margin (e.g., 30°) to avoid picking ambiguous mapping
+      const secondBest = diffs.filter((d,i)=>i!==idx).reduce((a,b)=>Math.min(a,b), 1e6);
+      if (min + 20 < secondBest) { // best is at least 20° better
+        headingCalibration = idx + 1;
+        calibrated = true;
+        // console.info('Calibrated orientation -> candidate', headingCalibration, 'minDiff', min.toFixed(1));
+      }
+    }
+
+    function headingFromAlpha(alpha) {
+      if (typeof alpha !== 'number' || isNaN(alpha)) return null;
+      const screenAngle = getScreenAngle();
+      const cands = computeCandidates(alpha, screenAngle);
+      if (calibrated && headingCalibration && headingCalibration >=1 && headingCalibration <=4) {
+        return cands[headingCalibration - 1];
+      }
+      // if not calibrated choose candidate that seems most "normal": try candidate1 first
+      return cands[0];
+    }
+
+    // ----------------- Device orientation listener -----------------
     function handleDeviceOrientation(e) {
-      let heading = null;
-      if (typeof e.webkitCompassHeading === 'number') {
-        heading = e.webkitCompassHeading; // iOS: already clockwise from north
-      } else if (typeof e.alpha === 'number') {
-        heading = e.alpha; // Android: clockwise from north
+      // use webkitCompassHeading on iOS if available (already clockwise from north)
+      if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
+        const h = norm360(e.webkitCompassHeading);
+        if (!calibrated) { calibrated = true; headingCalibration = 0; } // explicit native compass
+        // apply only if we don't have a GPS heading that's more reliable at that moment
+        if (lastGpsHeading === null || lastGpsSpeed < GPS_SPEED_THRESHOLD) {
+          // no strong GPS heading -> use compass heading
+          updateUserMarkerPositionHeadingOnly(h);
+        }
+        return;
       }
-      if (heading != null && !isNaN(heading)) {
-        const latlng = userMarker && userMarker.getLatLng();
-        if (latlng) updateUserMarker(latlng.lat, latlng.lng, heading);
+
+      // otherwise use alpha with calibration
+      const alpha = (typeof e.alpha === 'number') ? e.alpha : null;
+      if (alpha === null) return;
+
+      // attempt calibration if possible (calibration requires gps heading while moving)
+      maybeCalibrateDeviceOrientation(alpha);
+
+      const computed = headingFromAlpha(alpha);
+      if (computed !== null) {
+        // only apply when GPS heading is absent or not reliable
+        if (lastGpsHeading === null || lastGpsSpeed < GPS_SPEED_THRESHOLD) {
+          updateUserMarkerPositionHeadingOnly(computed);
+        }
       }
     }
 
-    function enableCompass() {
+    function updateUserMarkerPositionHeadingOnly(heading) {
+      if (!userMarker) {
+        // no position yet, just set smoothed heading so when marker appears it won't jump
+        smoothedHeading = smoothedHeading === null ? heading : smoothedHeading;
+      } else {
+        const latlng = userMarker.getLatLng();
+        updateUserMarker(latlng.lat, latlng.lng, heading);
+      }
+    }
+
+    // show compass permission button for iOS
+    function enableCompassPermissionFlow() {
+      const btn = document.getElementById('compass-btn');
       if (typeof DeviceOrientationEvent !== 'undefined' &&
           typeof DeviceOrientationEvent.requestPermission === 'function') {
-        DeviceOrientationEvent.requestPermission().then(res=>{
-          if (res==='granted') {
-            window.addEventListener('deviceorientation', handleDeviceOrientation, true);
-            document.getElementById('compass-btn').style.display='none';
-          }
-        });
+        btn.style.display = 'block';
+        btn.onclick = function(){
+          DeviceOrientationEvent.requestPermission().then(res=>{
+            if (res === 'granted') {
+              window.addEventListener('deviceorientation', handleDeviceOrientation, true);
+              btn.style.display = 'none';
+            } else {
+              console.warn('DeviceOrientation permission denied:', res);
+            }
+          }).catch(err=>{
+            console.warn('DeviceOrientation.requestPermission error', err);
+          });
+        };
       } else {
+        // no permission required on this browser
         window.addEventListener('deviceorientation', handleDeviceOrientation, true);
-        document.getElementById('compass-btn').style.display='none';
       }
     }
+    enableCompassPermissionFlow();
 
-    // show compass button for iOS
-    if (typeof DeviceOrientationEvent !== 'undefined' &&
-        typeof DeviceOrientationEvent.requestPermission === 'function') {
-      document.getElementById('compass-btn').style.display='block';
-      document.getElementById('compass-btn').addEventListener('click', enableCompass);
-    } else {
-      enableCompass();
-    }
-
-    // watch position
-    if (navigator.geolocation) {
-      navigator.geolocation.watchPosition(pos=>{
+    // ----------------- Geolocation watch -----------------
+    let watchId = null;
+    if ('geolocation' in navigator) {
+      watchId = navigator.geolocation.watchPosition(pos=>{
         const lat = pos.coords.latitude;
         const lon = pos.coords.longitude;
-        const gpsHeading = (typeof pos.coords.heading === 'number') ? pos.coords.heading : null;
-        updateUserMarker(lat, lon, gpsHeading);
-        if (lastFetchLat===null || distanceMeters(lat,lon,lastFetchLat,lastFetchLon)>fetchThreshold) {
-          lastFetchLat=lat; lastFetchLon=lon;
+        const gpsHeading = (typeof pos.coords.heading === 'number' && !isNaN(pos.coords.heading)) ? norm360(pos.coords.heading) : null;
+        const gpsSpeed = (typeof pos.coords.speed === 'number' && !isNaN(pos.coords.speed)) ? pos.coords.speed : 0;
+        lastGpsHeading = gpsHeading;
+        lastGpsSpeed = gpsSpeed;
+
+        // If we have a gps heading and it's reliable (moving), prefer it and also use it to calibrate orientation mapping:
+        if (gpsHeading !== null && gpsSpeed >= GPS_SPEED_THRESHOLD) {
+          // if calibration not done, try calibrate using most recent alpha (deviceorientation events may have set last alpha)
+          // (maybeCalibrateDeviceOrientation gets called from deviceorientation events too)
+          // apply GPS heading directly (preferred when moving)
+          updateUserMarker(lat, lon, gpsHeading);
+        } else {
+          // no reliable GPS heading -> apply last smoothed heading or device-orientation computed heading
+          updateUserMarker(lat, lon, smoothedHeading);
+        }
+
+        // fetch trees when moved enough
+        if (lastFetchLat === null || distanceMeters(lat, lon, lastFetchLat, lastFetchLon) > FETCH_THRESHOLD_METERS) {
+          lastFetchLat = lat; lastFetchLon = lon;
           loadTrees(lat, lon);
         }
       }, err=>{
-        console.warn("Geolocation error:", err.message);
-        if (lastFetchLat===null) loadTrees(51.045,-114.071);
-      }, { enableHighAccuracy:true, maximumAge:1000, timeout:10000 });
+        console.warn('Geolocation error:', err && err.message ? err.message : err);
+        // fallback to default centre if nothing yet
+        if (lastFetchLat === null) {
+          lastFetchLat = 51.045; lastFetchLon = -114.071;
+          loadTrees(lastFetchLat, lastFetchLon);
+        }
+      }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 });
     } else {
-      loadTrees(51.045,-114.071);
+      // no geolocation
+      lastFetchLat = 51.045; lastFetchLon = -114.071;
+      loadTrees(lastFetchLat, lastFetchLon);
+      console.warn('Geolocation not supported');
     }
+
+    // ----------------- cleanup -----------------
+    window.addEventListener('beforeunload', ()=> {
+      if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
+      window.removeEventListener('deviceorientation', handleDeviceOrientation);
+    });
+
+    // small helper for debugging:
+    // set debugConsole = true to see some calibration/logging in console
+    const debugConsole = false;
+    if (debugConsole) {
+      const log = console.log.bind(console);
+      setInterval(()=>{
+        log('calibrated', calibrated, 'calChoice', headingCalibration, 'smH', smoothedHeading, 'lastGpsH', lastGpsHeading, 'lastGpsSpeed', lastGpsSpeed);
+      }, 1000);
+    }
+  })();
   </script>
 </body>
 </html>
