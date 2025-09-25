@@ -138,9 +138,9 @@
     function handleDeviceOrientation(e) {
       let heading = null;
       if (typeof e.webkitCompassHeading === 'number') {
-        heading = e.webkitCompassHeading; // iOS
+        heading = e.webkitCompassHeading; // iOS: already clockwise from north
       } else if (typeof e.alpha === 'number') {
-        heading = 360 - e.alpha; // Android approx
+        heading = e.alpha; // Android: clockwise from north
       }
       if (heading != null && !isNaN(heading)) {
         const latlng = userMarker && userMarker.getLatLng();
