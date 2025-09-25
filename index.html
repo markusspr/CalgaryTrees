@@ -1,23 +1,24 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Calgary Trees Map — Stable Compass</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Calgary Trees Map — Simple Compass</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
   <style>
     html,body,#map { height: 100%; margin: 0; padding: 0; }
     #map { width: 100%; height: 100vh; }
-    .user-marker { width: 40px; height: 40px; display:flex; align-items:center; justify-content:center; }
+    .user-marker { width: 40px; height: 40px; display:flex; align-items:center; justify-content:center; pointer-events: none; }
     .user-marker .arrow {
       width: 30px; height: 30px; transform-origin: center center;
-      transition: transform 0.18s cubic-bezier(.22,.98,.3,.99);
+      transition: transform 0.18s linear; /* smooth but responsive */
       will-change: transform;
     }
     #compass-btn {
       position: absolute; top: 12px; right: 12px; z-index: 1200;
       padding: 8px 10px; border-radius: 6px; background: #fff;
-      border: 1px solid rgba(0,0,0,0.12); font-size: 13px; box-shadow: 0 1px 6px rgba(0,0,0,0.08);
+      border: 1px solid rgba(0,0,0,0.12); font-size: 13px;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.08);
     }
   </style>
 </head>
@@ -28,46 +29,28 @@
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script>
   (function(){
+    // ---------- config ----------
     const RADIUS_METERS = 250;
     const FETCH_THRESHOLD_METERS = 25;
     const APP_TOKEN = "8Y6BJoOEjSnxgyvODpDnOR5Yj";
-    const VECTOR_SMOOTH_ALPHA = 0.18; // smoothing factor for unit-vector smoothing (0..1)
-    const GPS_SPEED_THRESHOLD = 0.8; // m/s to trust GPS heading
+    const SMOOTHING = 0.18;        // 0..1 smoothing factor for heading (lower = smoother)
+    const GPS_SPEED_THRESHOLD = 0.8; // m/s to consider GPS heading reliable
 
-    const map = L.map('map').setView([51.045, -114.071], 16);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(map);
-    const treeLayer = L.layerGroup().addTo(map);
-
-    // state
-    let userMarker = null;
-    let firstFix = true;
-    let lastFetchLat = null;
-    let lastFetchLon = null;
-    let lastGpsHeading = null;
-    let lastGpsSpeed = null;
-
-    // vector-smoothing state for heading: we keep smoothed unit vector (sx, sy)
-    let sx = null, sy = null;
-
-    // calibration: we'll pick the best candidate mapping between device alpha and true heading.
-    // calibrationChoice = { index: 0..3, inverted: boolean } or null when unknown.
-    let calibrationChoice = null;
-    let calibrated = false;
-
-    function norm360(a) {
-      a = a % 360;
-      if (a < 0) a += 360;
-      return a;
-    }
-    function angDiff(a, b) {
-      let d = a - b;
+    // ---------- helpers ----------
+    const norm360 = a => ((a % 360) + 360) % 360;
+    function angDiff(target, from) { // signed shortest diff target - from
+      let d = norm360(target) - norm360(from);
       if (d > 180) d -= 360;
       if (d < -180) d += 360;
       return d;
     }
-    function angAbsDiff(a,b) { return Math.abs(angDiff(norm360(a), norm360(b))); }
+    function angAbsDiff(a,b){ return Math.abs(angDiff(a,b)); }
+
+    function getScreenAngle() {
+      if (screen && screen.orientation && typeof screen.orientation.angle === 'number') return norm360(Number(screen.orientation.angle));
+      if (typeof window.orientation === 'number') return norm360(Number(window.orientation));
+      return 0;
+    }
 
     function distanceMeters(lat1, lon1, lat2, lon2) {
       const toRad = d => d * Math.PI/180;
@@ -78,160 +61,110 @@
       return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     }
 
-    function getScreenAngle() {
-      if (screen && screen.orientation && typeof screen.orientation.angle === 'number') return norm360(Number(screen.orientation.angle));
-      if (typeof window.orientation === 'number') return norm360(Number(window.orientation));
-      return 0;
-    }
+    // ---------- map ----------
+    const map = L.map('map').setView([51.045, -114.071], 16);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+    const treeLayer = L.layerGroup().addTo(map);
 
-    function createUserIconHtml() {
-      return `
+    // ---------- user marker + state ----------
+    let userMarker = null;
+    let accuracyCircle = null;
+    let firstFix = true;
+    let lastFetchLat = null, lastFetchLon = null;
+
+    // headings
+    let currentHeading = null;      // smoothed heading shown on UI (deg)
+    let deviceHeading = null;       // last deviceorientation-derived heading (deg)
+    let gpsHeading = null;          // last gps heading (deg)
+    let gpsSpeed = 0;               // last gps speed (m/s)
+
+    function createUserIcon() {
+      const html = `
         <div class="user-marker" aria-hidden="true">
           <svg class="arrow" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
             <path d="M12 2 L16 12 L12 9 L8 12 Z" fill="#007aff"/>
             <circle cx="12" cy="17" r="3" fill="#007aff"/>
           </svg>
         </div>`;
-    }
-    function createUserIcon() {
-      return L.divIcon({ html: createUserIconHtml(), className: '', iconSize: [40,40], iconAnchor: [20,20] });
+      return L.divIcon({ html, className: '', iconSize: [40,40], iconAnchor: [20,20] });
     }
 
-    // apply a heading angle (deg) by smoothing the unit vector representation
-    function applyHeadingWithVectorSmoothing(newHeadingDeg) {
-      const hd = norm360(newHeadingDeg);
-      const rad = hd * Math.PI / 180;
-      const nx = Math.cos(rad);
-      const ny = Math.sin(rad);
-      if (sx === null || sy === null) {
-        sx = nx; sy = ny;
-      } else {
-        sx = sx * (1 - VECTOR_SMOOTH_ALPHA) + nx * VECTOR_SMOOTH_ALPHA;
-        sy = sy * (1 - VECTOR_SMOOTH_ALPHA) + ny * VECTOR_SMOOTH_ALPHA;
-        const len = Math.hypot(sx, sy);
-        if (len > 0.000001) { sx /= len; sy /= len; } // normalize to avoid drift
-      }
-      const smoothAngle = norm360(Math.atan2(sy, sx) * 180 / Math.PI);
-      // apply to DOM
-      if (userMarker) {
-        const el = userMarker.getElement && userMarker.getElement();
-        if (el) {
-          const arrow = el.querySelector('.arrow');
-          if (arrow) {
-            arrow.style.opacity = 1;
-            arrow.style.transform = `rotate(${smoothAngle}deg)`;
-          }
-        }
-      } else {
-        // if marker not placed yet, set sx/sy so initial angle won't jump later
-      }
-    }
-
-    function updateUserMarker(lat, lon, headingDegOrNull) {
+    function setMarkerPosition(lat, lon, accuracy) {
       if (!userMarker) {
-        userMarker = L.marker([lat, lon], { icon: createUserIcon() }).addTo(map);
+        userMarker = L.marker([lat, lon], { icon: createUserIcon(), interactive:false }).addTo(map);
         userMarker.bindPopup('You are here');
       } else {
         userMarker.setLatLng([lat, lon]);
       }
-      if (typeof headingDegOrNull === 'number' && !isNaN(headingDegOrNull)) {
-        applyHeadingWithVectorSmoothing(headingDegOrNull);
-      } else {
-        // dim arrow when no heading
-        const el = userMarker.getElement && userMarker.getElement();
-        if (el) {
-          const arrow = el.querySelector('.arrow');
-          if (arrow) arrow.style.opacity = 0.28;
-        }
+      if (typeof accuracy === 'number') {
+        if (!accuracyCircle) accuracyCircle = L.circle([lat, lon], { radius: accuracy, opacity:0.2, fillOpacity:0.08 }).addTo(map);
+        else { accuracyCircle.setLatLng([lat, lon]); accuracyCircle.setRadius(accuracy); }
       }
-      if (firstFix) {
-        map.setView([lat, lon], 16);
-        userMarker.openPopup();
-        firstFix = false;
-      }
+      if (firstFix) { map.setView([lat, lon], 16); userMarker.openPopup(); firstFix = false; }
     }
 
-    // DeviceOrientation -> candidate headings (four formulas) as in prior iteration
-    function computeAlphaCandidates(alpha, screenAngle) {
-      return [
-        norm360(alpha + screenAngle),
-        norm360(alpha - screenAngle),
-        norm360(360 - alpha + screenAngle),
-        norm360(360 - alpha - screenAngle)
-      ];
-    }
-
-    // Try auto-calibration: given alpha (device) and a reliable GPS heading, pick best candidate and whether it's inverted.
-    function tryCalibrate(alpha) {
-      if (typeof alpha !== 'number' || isNaN(alpha)) return;
-      if (lastGpsHeading === null || lastGpsSpeed === null) return;
-      if (lastGpsSpeed < GPS_SPEED_THRESHOLD) return; // need movement for reliable gps heading
-
-      const screen = getScreenAngle();
-      const cands = computeAlphaCandidates(alpha, screen);
-      // For each candidate also consider its 180° inverted version. We'll choose the candidate/inversion with smallest diff to GPS heading.
-      let best = { idx: -1, inverted: false, diff: 1e9 };
-      for (let i = 0; i < cands.length; i++) {
-        const normalDiff = angAbsDiff(cands[i], lastGpsHeading);
-        if (normalDiff < best.diff) best = { idx: i, inverted: false, diff: normalDiff };
-        const inv = norm360(cands[i] + 180);
-        const invDiff = angAbsDiff(inv, lastGpsHeading);
-        if (invDiff < best.diff) best = { idx: i, inverted: true, diff: invDiff };
-      }
-      // require some margin to avoid ambiguous picks
-      if (best.diff < 30) {
-        calibrationChoice = { index: best.idx, inverted: best.inverted };
-        calibrated = true;
-      }
-    }
-
-    // compute heading from alpha using calibrationChoice if available
-    function headingFromAlpha(alpha) {
-      if (typeof alpha !== 'number' || isNaN(alpha)) return null;
-      const screen = getScreenAngle();
-      const cands = computeAlphaCandidates(alpha, screen);
-      if (calibrated && calibrationChoice && calibrationChoice.index >= 0 && calibrationChoice.index < cands.length) {
-        let val = cands[calibrationChoice.index];
-        if (calibrationChoice.inverted) val = norm360(val + 180);
-        return val;
-      }
-      // fallback: choose candidate 0 (alpha + screen)
-      return cands[0];
-    }
-
-    // DeviceOrientation handler
-    function handleDeviceOrientation(e) {
-      // Prefer webkitCompassHeading when present (iOS native)
-      if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
-        const nativeHeading = norm360(e.webkitCompassHeading);
-        // if GPS heading is present and moving, GPS will be preferred elsewhere.
-        if (!calibrated) {
-          // treat webkitCompassHeading as trusted native; record calibrationChoice = special
-          calibrationChoice = { index: -1, inverted: false }; // marker for native
-          calibrated = true;
-        }
-        // Use only if GPS not preferred
-        if (lastGpsHeading === null || lastGpsSpeed < GPS_SPEED_THRESHOLD) {
-          if (userMarker) updateUserMarker(userMarker.getLatLng().lat, userMarker.getLatLng().lng, nativeHeading);
-          else { sx = Math.cos(nativeHeading * Math.PI/180); sy = Math.sin(nativeHeading * Math.PI/180); }
+    function applyHeading(targetHeading) {
+      if (targetHeading == null || isNaN(targetHeading)) {
+        // dim arrow
+        if (userMarker) {
+          const el = userMarker.getElement(); if (el) { const arrow = el.querySelector('.arrow'); if (arrow) arrow.style.opacity = 0.28; }
         }
         return;
       }
-      // else fallback to alpha
-      const alpha = (typeof e.alpha === 'number') ? e.alpha : null;
-      if (alpha === null) return;
-      // try calibrate if we can
-      tryCalibrate(alpha);
-      const h = headingFromAlpha(alpha);
-      if (h === null) return;
-      // only apply device-based heading when GPS heading absent or not reliable
-      if (lastGpsHeading === null || lastGpsSpeed < GPS_SPEED_THRESHOLD) {
-        if (userMarker) updateUserMarker(userMarker.getLatLng().lat, userMarker.getLatLng().lng, h);
-        else { sx = Math.cos(h * Math.PI/180); sy = Math.sin(h * Math.PI/180); }
+      // smooth across 0/360 using shortest path
+      if (currentHeading == null) currentHeading = norm360(targetHeading);
+      else {
+        const d = angDiff(norm360(targetHeading), currentHeading);
+        currentHeading = norm360(currentHeading + d * SMOOTHING);
+      }
+      if (userMarker) {
+        const el = userMarker.getElement(); if (el) {
+          const arrow = el.querySelector('.arrow'); if (arrow) {
+            arrow.style.opacity = 1;
+            arrow.style.transform = `rotate(${currentHeading}deg)`;
+          }
+        }
       }
     }
 
-    // expose compass permission button for iOS
+    // ---------- device orientation (simple, small logic) ----------
+    // we compute two candidates for alpha and pick the one closer to gpsHeading (if available)
+    function handleDeviceOrientation(e) {
+      // iOS native compass
+      if (typeof e.webkitCompassHeading === 'number') {
+        deviceHeading = norm360(e.webkitCompassHeading);
+        // if GPS not preferred, apply it
+        if (!gpsHeading || gpsSpeed < GPS_SPEED_THRESHOLD) applyHeading(deviceHeading);
+        return;
+      }
+      // fallback to alpha
+      const alpha = (typeof e.alpha === 'number') ? e.alpha : null;
+      if (alpha === null) return;
+      const screen = getScreenAngle();
+      // candidate A: alpha + screen
+      const candA = norm360(alpha + screen);
+      // candidate B: 360 - alpha + screen  (the common alternative/orientation-inversion)
+      const candB = norm360(360 - alpha + screen);
+
+      // pick candidate:
+      let pick = candA;
+      if (typeof gpsHeading === 'number') {
+        // pick candidate closer to GPS heading
+        pick = (angAbsDiff(candA, gpsHeading) <= angAbsDiff(candB, gpsHeading)) ? candA : candB;
+      } else if (currentHeading != null) {
+        // else pick candidate closer to currentHeading to avoid flipping
+        pick = (angAbsDiff(candA, currentHeading) <= angAbsDiff(candB, currentHeading)) ? candA : candB;
+      } else {
+        pick = candA;
+      }
+      deviceHeading = pick;
+      // if no reliable gps heading, apply device heading
+      if (!gpsHeading || gpsSpeed < GPS_SPEED_THRESHOLD) applyHeading(deviceHeading);
+    }
+
+    // show permission button on iOS
     function enableCompassPermissionFlow() {
       const btn = document.getElementById('compass-btn');
       if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
@@ -252,15 +185,15 @@
     }
     enableCompassPermissionFlow();
 
-    // tree fetch
+    // ---------- trees loading ----------
     function loadTrees(lat, lon) {
       treeLayer.clearLayers();
       const url = `https://data.calgary.ca/resource/tfs4-3wwa.json?$$app_token=${APP_TOKEN}&$where=within_circle(point, ${lat}, ${lon}, ${RADIUS_METERS})&$limit=500`;
-      fetch(url).then(r=>r.json()).then(data=>{
+      fetch(url).then(r => r.json()).then(data => {
         if (!Array.isArray(data)) return;
-        data.forEach(tree=>{
+        data.forEach(tree => {
           if (tree.point && tree.point.coordinates) {
-            const [tLon,tLat] = tree.point.coordinates;
+            const [tLon, tLat] = tree.point.coordinates;
             const m = L.circleMarker([tLat, tLon], { radius:5, color:'green', fillOpacity:0.7 }).addTo(treeLayer);
             m.bindPopup(`
               <b>${tree.common_name || tree.scientific_name || 'Unknown'}</b><br>
@@ -272,39 +205,38 @@
             `);
           }
         });
-      }).catch(e=>console.warn('Tree fetch error', e));
+      }).catch(e => console.warn('Tree fetch error', e));
     }
 
-    // geolocation watch; GPS heading preferred when speed above threshold
-    let watchId = null;
+    // ---------- geolocation watch ----------
     if ('geolocation' in navigator) {
-      watchId = navigator.geolocation.watchPosition(pos => {
+      navigator.geolocation.watchPosition(pos => {
         const lat = pos.coords.latitude;
         const lon = pos.coords.longitude;
-        const gpsHeading = (typeof pos.coords.heading === 'number' && !isNaN(pos.coords.heading)) ? norm360(pos.coords.heading) : null;
-        const gpsSpeed = (typeof pos.coords.speed === 'number' && !isNaN(pos.coords.speed)) ? pos.coords.speed : 0;
-        lastGpsHeading = gpsHeading;
-        lastGpsSpeed = gpsSpeed;
+        const accuracy = pos.coords.accuracy;
+        const rawGpsHeading = (typeof pos.coords.heading === 'number' && !isNaN(pos.coords.heading)) ? pos.coords.heading : null;
+        gpsHeading = (rawGpsHeading !== null) ? norm360(rawGpsHeading) : null;
+        gpsSpeed = (typeof pos.coords.speed === 'number' && !isNaN(pos.coords.speed)) ? pos.coords.speed : 0;
 
+        setMarkerPosition(lat, lon, accuracy);
+
+        // choose which heading to use: prefer gps when moving, otherwise device
         if (gpsHeading !== null && gpsSpeed >= GPS_SPEED_THRESHOLD) {
-          // prefer GPS heading when moving; also use this sample to calibrate device orientation
-          updateUserMarker(lat, lon, gpsHeading);
+          // prefer GPS heading
+          applyHeading(gpsHeading);
+        } else if (deviceHeading !== null) {
+          applyHeading(deviceHeading);
         } else {
-          // if we have smoothed vector (sx,sy), convert to deg and use it; else null
-          if (sx !== null && sy !== null) {
-            const angle = norm360(Math.atan2(sy, sx) * 180 / Math.PI);
-            updateUserMarker(lat, lon, angle);
-          } else {
-            updateUserMarker(lat, lon, null);
-          }
+          applyHeading(null);
         }
 
+        // fetch trees if moved enough
         if (lastFetchLat === null || distanceMeters(lat, lon, lastFetchLat, lastFetchLon) > FETCH_THRESHOLD_METERS) {
           lastFetchLat = lat; lastFetchLon = lon;
           loadTrees(lat, lon);
         }
       }, err => {
-        console.warn('Geolocation error', err && err.message ? err.message : err);
+        console.warn('Geolocation error:', err && err.message ? err.message : err);
         if (lastFetchLat === null) { lastFetchLat = 51.045; lastFetchLon = -114.071; loadTrees(lastFetchLat, lastFetchLon); }
       }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 });
     } else {
@@ -312,16 +244,16 @@
       console.warn('Geolocation not supported');
     }
 
+    // cleanup
     window.addEventListener('beforeunload', () => {
-      if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
       window.removeEventListener('deviceorientation', handleDeviceOrientation);
     });
 
-    // debug toggles (set to true to log calibration state)
+    // debug (turn on if you want console output)
     const DEBUG = false;
     if (DEBUG) {
-      setInterval(()=>{
-        console.log({ calibrated, calibrationChoice, lastGpsHeading, lastGpsSpeed, sx, sy });
+      setInterval(() => {
+        console.log('gpsHeading', gpsHeading, 'gpsSpeed', gpsSpeed, 'deviceHeading', deviceHeading, 'current', currentHeading);
       }, 1000);
     }
   })();
