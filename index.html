@@ -1,9 +1,9 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Calgary Trees Map — Simple Compass</title>
+  <title>Calgary Trees Map — Simple Compass (fixed)</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
   <style>
     html,body,#map { height: 100%; margin: 0; padding: 0; }
@@ -11,7 +11,7 @@
     .user-marker { width: 40px; height: 40px; display:flex; align-items:center; justify-content:center; pointer-events: none; }
     .user-marker .arrow {
       width: 30px; height: 30px; transform-origin: center center;
-      transition: transform 0.18s linear; /* smooth but responsive */
+      transition: transform 0.18s linear;
       will-change: transform;
     }
     #compass-btn {
@@ -33,7 +33,7 @@
     const RADIUS_METERS = 250;
     const FETCH_THRESHOLD_METERS = 25;
     const APP_TOKEN = "8Y6BJoOEjSnxgyvODpDnOR5Yj";
-    const SMOOTHING = 0.18;        // 0..1 smoothing factor for heading (lower = smoother)
+    const SMOOTHING = 0.18;        // 0..1 smoothing factor (lower = smoother)
     const GPS_SPEED_THRESHOLD = 0.8; // m/s to consider GPS heading reliable
 
     // ---------- helpers ----------
@@ -76,9 +76,11 @@
 
     // headings
     let currentHeading = null;      // smoothed heading shown on UI (deg)
-    let deviceHeading = null;       // last deviceorientation-derived heading (deg)
+    let deviceHeading = null;       // last device-derived heading (deg)
     let gpsHeading = null;          // last gps heading (deg)
     let gpsSpeed = 0;               // last gps speed (m/s)
+    let lastDevicePick = null;      // last chosen candidate from deviceorientation (stability)
+    const DEBUG = false;
 
     function createUserIcon() {
       const html = `
@@ -107,15 +109,14 @@
 
     function applyHeading(targetHeading) {
       if (targetHeading == null || isNaN(targetHeading)) {
-        // dim arrow
         if (userMarker) {
           const el = userMarker.getElement(); if (el) { const arrow = el.querySelector('.arrow'); if (arrow) arrow.style.opacity = 0.28; }
         }
         return;
       }
-      // smooth across 0/360 using shortest path
       if (currentHeading == null) currentHeading = norm360(targetHeading);
       else {
+        // move along shortest path
         const d = angDiff(norm360(targetHeading), currentHeading);
         currentHeading = norm360(currentHeading + d * SMOOTHING);
       }
@@ -129,38 +130,50 @@
       }
     }
 
-    // ---------- device orientation (simple, small logic) ----------
-    // we compute two candidates for alpha and pick the one closer to gpsHeading (if available)
+    // ---------- device orientation (robust, minimal logic) ----------
+    // Strategy:
+    // 1) On iOS prefer webkitCompassHeading (absolute).
+    // 2) Else derive candidates from alpha (candA = alpha + screen, candB = 360 - alpha + screen).
+    // 3) Choose candidate that keeps continuity (compare to lastDevicePick) and prefer GPS heading if moving.
     function handleDeviceOrientation(e) {
       // iOS native compass
       if (typeof e.webkitCompassHeading === 'number') {
         deviceHeading = norm360(e.webkitCompassHeading);
-        // if GPS not preferred, apply it
+        lastDevicePick = deviceHeading;
         if (!gpsHeading || gpsSpeed < GPS_SPEED_THRESHOLD) applyHeading(deviceHeading);
         return;
       }
-      // fallback to alpha
+
       const alpha = (typeof e.alpha === 'number') ? e.alpha : null;
       if (alpha === null) return;
       const screen = getScreenAngle();
-      // candidate A: alpha + screen
+
       const candA = norm360(alpha + screen);
-      // candidate B: 360 - alpha + screen  (the common alternative/orientation-inversion)
       const candB = norm360(360 - alpha + screen);
 
-      // pick candidate:
-      let pick = candA;
+      // choose stable candidate:
+      let pick;
       if (typeof gpsHeading === 'number') {
-        // pick candidate closer to GPS heading
         pick = (angAbsDiff(candA, gpsHeading) <= angAbsDiff(candB, gpsHeading)) ? candA : candB;
-      } else if (currentHeading != null) {
-        // else pick candidate closer to currentHeading to avoid flipping
-        pick = (angAbsDiff(candA, currentHeading) <= angAbsDiff(candB, currentHeading)) ? candA : candB;
+      } else if (lastDevicePick != null) {
+        // prefer candidate that stays close to lastDevicePick (avoid 180 flips)
+        const da = angAbsDiff(candA, lastDevicePick);
+        const db = angAbsDiff(candB, lastDevicePick);
+        // if one candidate is clearly closer keep it, otherwise fallback to candA for determinism
+        if (da + 1e-6 < db && da < 120) pick = candA;
+        else if (db + 1e-6 < da && db < 120) pick = candB;
+        else {
+          // if both are similar, prefer the one closer to currentHeading (if available), else candA
+          if (currentHeading != null) pick = (angAbsDiff(candA, currentHeading) <= angAbsDiff(candB, currentHeading)) ? candA : candB;
+          else pick = candA;
+        }
       } else {
         pick = candA;
       }
+
       deviceHeading = pick;
-      // if no reliable gps heading, apply device heading
+      lastDevicePick = pick;
+
       if (!gpsHeading || gpsSpeed < GPS_SPEED_THRESHOLD) applyHeading(deviceHeading);
     }
 
@@ -172,6 +185,8 @@
         btn.onclick = function() {
           DeviceOrientationEvent.requestPermission().then(res => {
             if (res === 'granted') {
+              // listen to both events; some browsers support absolute variant
+              window.addEventListener('deviceorientationabsolute', handleDeviceOrientation, true);
               window.addEventListener('deviceorientation', handleDeviceOrientation, true);
               btn.style.display = 'none';
             } else {
@@ -180,6 +195,7 @@
           }).catch(err => console.warn('DeviceOrientation.requestPermission error', err));
         };
       } else {
+        window.addEventListener('deviceorientationabsolute', handleDeviceOrientation, true);
         window.addEventListener('deviceorientation', handleDeviceOrientation, true);
       }
     }
@@ -220,9 +236,8 @@
 
         setMarkerPosition(lat, lon, accuracy);
 
-        // choose which heading to use: prefer gps when moving, otherwise device
+        // choose which heading to use: prefer gps when moving, otherwise device-derived
         if (gpsHeading !== null && gpsSpeed >= GPS_SPEED_THRESHOLD) {
-          // prefer GPS heading
           applyHeading(gpsHeading);
         } else if (deviceHeading !== null) {
           applyHeading(deviceHeading);
@@ -247,14 +262,14 @@
     // cleanup
     window.addEventListener('beforeunload', () => {
       window.removeEventListener('deviceorientation', handleDeviceOrientation);
+      window.removeEventListener('deviceorientationabsolute', handleDeviceOrientation);
     });
 
-    // debug (turn on if you want console output)
-    const DEBUG = false;
+    // optional debug printing
     if (DEBUG) {
       setInterval(() => {
-        console.log('gpsHeading', gpsHeading, 'gpsSpeed', gpsSpeed, 'deviceHeading', deviceHeading, 'current', currentHeading);
-      }, 1000);
+        console.log('gpsHeading', gpsHeading, 'gpsSpeed', gpsSpeed, 'deviceHeading', deviceHeading, 'current', currentHeading, 'lastDevicePick', lastDevicePick);
+      }, 800);
     }
   })();
   </script>
