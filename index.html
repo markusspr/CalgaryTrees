@@ -4,10 +4,7 @@
   <title>Calgary Trees Map</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  
-  <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-
   <style>
     #map { width: 100%; height: 100vh; }
     .bearing-arrow {
@@ -17,30 +14,28 @@
 </head>
 <body>
   <div id="map"></div>
-
-  <!-- Leaflet JS -->
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-  <!-- Leaflet.RotatedMarker plugin (after Leaflet) -->
-  <script src="https://rawcdn.githack.com/bbecquet/Leaflet.RotatedMarker/master/leaflet.rotatedMarker.js"></script>
-  <!-- Full-Tilt JS -->
-  <script src="https://cdn.jsdelivr.net/npm/@hughsk/fulltilt@0.7.1/dist/fulltilt.min.js"></script>
-
   <script>
     const radius = 250; // meters
-    const map = L.map("map").setView([51.045, -114.071], 16);
+
+    const map = L.map("map").setView([51.045, -114.071], 16); // initial fallback view
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
       attribution: "&copy; OpenStreetMap contributors"
     }).addTo(map);
 
-    // Load nearby trees
+    // Function to fetch and display trees
     function loadTrees(lat, lon) {
       const url = `https://data.calgary.ca/resource/tfs4-3wwa.json?$$app_token=8Y6BJoOEjSnxgyvODpDnOR5Yj&$where=within_circle(point, ${lat}, ${lon}, ${radius})&$limit=200`;
+      
       fetch(url)
         .then(resp => resp.json())
         .then(data => {
-          if (!Array.isArray(data)) return;
+          if (!Array.isArray(data)) {
+            console.error("API returned error:", data);
+            return;
+          }
           data.forEach(tree => {
             if (tree.point && tree.point.coordinates) {
               const [treeLon, treeLat] = tree.point.coordinates;
@@ -63,52 +58,53 @@
         .catch(err => console.error("Error loading data", err));
     }
 
+    // Show user location with optional heading
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         pos => {
           const userLat = pos.coords.latitude;
           const userLon = pos.coords.longitude;
-          const heading = pos.coords.heading;
+          const heading = pos.coords.heading; // in degrees if available
 
-          // Create arrow icon for heading
-          const userIcon = L.divIcon({
-            className: 'bearing-arrow',
-            html: `<svg width="30" height="30" viewBox="0 0 30 30">
-                    <polygon points="15,0 25,30 15,25 5,30" style="fill:red;"/>
-                   </svg>`,
-            iconSize: [30, 30],
-            iconAnchor: [15, 15]
-          });
+          let userIcon;
+          if (heading !== null && !isNaN(heading)) {
+            // Create a rotated arrow icon for heading
+            userIcon = L.divIcon({
+              className: 'bearing-arrow',
+              html: `<svg width="30" height="30" viewBox="0 0 30 30">
+                      <polygon points="15,0 25,30 15,25 5,30" style="fill:red;"/>
+                     </svg>`,
+              iconSize: [30, 30],
+              iconAnchor: [15, 15]
+            });
+          } else {
+            // default marker if no heading
+            userIcon = L.icon({
+              iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+              iconSize: [25, 41],
+              iconAnchor: [12, 41]
+            });
+          }
 
-          // Create rotatable marker
-          const userMarker = L.marker([userLat, userLon], {
-            icon: userIcon,
-            rotationAngle: heading || 0
-          }).addTo(map)
+          L.marker([userLat, userLon], {icon: userIcon})
+            .addTo(map)
             .bindPopup("You are here")
             .openPopup();
 
           map.setView([userLat, userLon], 16);
+
+          // Fetch trees around current location
           loadTrees(userLat, userLon);
-
-          // Full-Tilt sensor for device heading
-          const sensor = new FullTilt.Sensor();
-          sensor.addEventListener('reading', () => {
-            const heading = sensor.absolute ? sensor.alpha : null;
-            if (heading !== null) {
-              userMarker.setRotationAngle(heading);
-            }
-          });
-          sensor.start();
-
         },
         err => {
           console.warn("Geolocation failed:", err.message);
+          // fallback: load trees around default map center
           loadTrees(51.045, -114.071);
         },
         { enableHighAccuracy: true }
       );
     } else {
+      // fallback: load trees around default map center
       loadTrees(51.045, -114.071);
     }
   </script>
