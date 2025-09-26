@@ -27,7 +27,7 @@
 
     // Function to fetch and display lights
     function loadLights(lat, lon) {
-      const url = `https://data.calgary.ca/resource/ikeb-n5bc.json?$where=within_circle(location, ${lat}, ${lon}, ${radius})`;
+      const url = `https://data.calgary.ca/resource/ikeb-n5bc.json?$$app_token=8Y6BJoOEjSnxgyvODpDnOR5Yj&$where=within_circle(location, ${lat}, ${lon}, ${radius})`;
 
       fetch(url)
         .then(resp => resp.json())
