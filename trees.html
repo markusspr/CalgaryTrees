@@ -47,12 +47,15 @@
                 fillOpacity: 0.7
               }).addTo(map)
                 .bindPopup(`
-                  <b>${tree.common_name || tree.scientific_name || "Unknown"}</b><br>
-                  Asset ID: ${tree.asset_id || "N/A"}<br>
-                  Scientific Name: ${tree.scientific_name || "N/A"}<br>
+                  <b>${tree.common_name || "Unknown"}</b><br>
+                 Type: ${tree.asset_type || "N/A"}<br>
+                 Subtype: ${tree.asset_subtype || "N/A"}<br>
+                  Rating: ${tree.rating || "N/A"}<br>
+                  Appraised Value: ${tree.appraised_value || "N/A"}<br>
                   DBH (cm): ${tree.dbh_cm || "N/A"}<br>
                   Mature Size: ${tree.mature_size || "N/A"}<br>
                   Condition: ${tree.tree_condition_rating_perc || "N/A"}%
+                  Heritage Tree: ${tree.heritage_trees || "N/A"}%
                 `);
             }
           });
