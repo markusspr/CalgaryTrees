@@ -49,8 +49,8 @@
           console.log(data);
           
           data.forEach(asset => {
-            if (asset.location && asset.location.coordinates) {
-              const [lonAsset, latAsset] = asset.location.coordinates;
+            if (asset.point && asset.point.coordinates) {
+              const [lonAsset, latAsset] = asset.point.coordinates;
               const color = assetTypes[asset.asset_type] || "gray";
 
               L.circleMarker([latAsset, lonAsset], {
