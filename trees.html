@@ -34,6 +34,7 @@
       fetch(url)
         .then(resp => resp.json())
         .then(data => {
+          console.log(data)
           if (!Array.isArray(data)) {
             console.error("API returned error:", data);
             return;
