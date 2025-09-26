@@ -88,8 +88,8 @@
     legend.onAdd = function () {
       const div = L.DomUtil.create("div", "legend");
       div.innerHTML += "<strong>Waterworks Legend</strong><br>";
-      for (const type in assetColors) {
-        div.innerHTML += `<i style="background:${assetColors[type]}"></i>${type}<br>`;
+      for (const type in assetTypes) {
+        div.innerHTML += `<i style="background:${assetTypes[type]}"></i>${type}<br>`;
       }
       return div;
     };
