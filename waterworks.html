@@ -36,8 +36,8 @@
     // Fetch and display Waterworks assets
     function loadWaterworks(lat, lon) {
       const typesArray = Object.keys(assetTypes).map(t => `'${t}'`).join(",");
-      const whereClause = `asset_type IN (${typesArray}) AND within_circle(location, ${lat}, ${lon}, ${radius})`;
-      const url = `https://data.calgary.ca/resource/jjkg-kv4n.json?$$app_token=8Y6BJoOEjSnxgyvODpDnOR5Yj&$where=${encodeURIComponent(whereClause)}`;
+      //const whereClause = `asset_type IN (${typesArray}) AND within_circle(location, ${lat}, ${lon}, ${radius})`;
+      const url = `https://data.calgary.ca/resource/jjkg-kv4n.json?$$app_token=8Y6BJoOEjSnxgyvODpDnOR5Yj&$where=within_circle(point, ${lat}, ${lon}, ${radius})`;
 
       fetch(url)
         .then(resp => resp.json())
