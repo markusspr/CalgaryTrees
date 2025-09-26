@@ -8,6 +8,21 @@
   <style>
     #map { width: 100%; height: 100vh; }
     .bearing-arrow { transform-origin: center; }
+    .legend {
+      background: white;
+      padding: 10px;
+      line-height: 1.5em;
+      border-radius: 5px;
+      box-shadow: 0 0 5px rgba(0,0,0,0.4);
+      font-size: 14px;
+    }
+    .legend i {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
   </style>
 </head>
 <body>
@@ -60,15 +75,25 @@
               }).addTo(map)
                 .bindPopup(`
                   <b>${asset.asset_type}</b><br>
-                  Asset ID: ${asset.asset_id || "N/A"}<br>
-                  Status: ${asset.status || "N/A"}<br>
-                  Location: ${asset.location_description || "N/A"}
+                  Seasonality: ${asset.seasonality || "N/A"}<br>
+                  Detail: ${asset.detail || "N/A"}<br>
                 `);
             }
           });
         })
         .catch(err => console.error("Error loading data", err));
     }
+
+    const legend = L.control({position: "bottomright"});
+    legend.onAdd = function () {
+      const div = L.DomUtil.create("div", "legend");
+      div.innerHTML += "<strong>Waterworks Legend</strong><br>";
+      for (const type in assetColors) {
+        div.innerHTML += `<i style="background:${assetColors[type]}"></i>${type}<br>`;
+      }
+      return div;
+    };
+    legend.addTo(map);
 
     // Show user location with optional heading
     if (navigator.geolocation) {
