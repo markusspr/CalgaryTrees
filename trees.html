@@ -16,7 +16,9 @@
   <div id="map"></div>
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script>
-    const radius = 250; // meters
+    // Get radius from query parameter
+    const params = new URLSearchParams(window.location.search);
+    const radius = parseInt(params.get('radius')) || 250; // fallback 250m
 
     const map = L.map("map").setView([51.045, -114.071], 16); // initial fallback view
 
@@ -64,11 +66,10 @@
         pos => {
           const userLat = pos.coords.latitude;
           const userLon = pos.coords.longitude;
-          const heading = pos.coords.heading; // in degrees if available
+          const heading = pos.coords.heading;
 
           let userIcon;
           if (heading !== null && !isNaN(heading)) {
-            // Create a rotated arrow icon for heading
             userIcon = L.divIcon({
               className: 'bearing-arrow',
               html: `<svg width="30" height="30" viewBox="0 0 30 30">
@@ -78,7 +79,6 @@
               iconAnchor: [15, 15]
             });
           } else {
-            // default marker if no heading
             userIcon = L.icon({
               iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
               iconSize: [25, 41],
@@ -93,19 +93,16 @@
 
           map.setView([userLat, userLon], 16);
 
-          // Fetch trees around current location
           loadTrees(userLat, userLon);
         },
         err => {
           console.warn("Geolocation failed:", err.message);
-          // fallback: load trees around default map center
-          loadTrees(51.045, -114.071);
+          loadTrees(51.045, -114.071); // fallback
         },
         { enableHighAccuracy: true }
       );
     } else {
-      // fallback: load trees around default map center
-      loadTrees(51.045, -114.071);
+      loadTrees(51.045, -114.071); // fallback
     }
   </script>
 </body>

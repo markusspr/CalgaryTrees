@@ -11,6 +11,7 @@
       color: white;
       padding: 0.5rem 1rem;
       display: flex;
+      align-items: center;
     }
     nav a {
       color: white;
@@ -23,18 +24,41 @@
     .content {
       padding: 2rem;
     }
+    #radiusInput {
+      width: 80px;
+      margin-right: 0.5rem;
+    }
   </style>
 </head>
 <body>
   <nav>
     <a href="index.html">Home</a>
-    <a href="trees.html">Trees Map</a>
-    <a href="bench.html">Bench Map</a>
-     <a href="waterworks.html">Waterworks Map</a>
+    <a href="#" id="linkTrees">Trees Map</a>
+    <a href="#" id="linkBench">Bench Map</a>
+    <a href="#" id="linkWaterworks">Waterworks Map</a>
   </nav>
   <div class="content">
     <h1>Welcome</h1>
-    <p>This is the home page. Use the navigation bar to explore.</p>
+    <p>Set the search radius (meters) for maps:</p>
+    <input type="number" id="radiusInput" value="250">
+    <button onclick="updateLinks()">Apply Radius</button>
+    <p>Use the navigation bar to explore the maps.</p>
   </div>
+
+  <script>
+    // Update the map links with the selected radius
+    function updateLinks() {
+      const radius = parseInt(document.getElementById('radiusInput').value) || 250;
+      document.getElementById('linkTrees').href = `trees.html?radius=${radius}`;
+      document.getElementById('linkBench').href = `bench.html?radius=${radius}`;
+      document.getElementById('linkWaterworks').href = `waterworks.html?radius=${radius}`;
+      alert('Radius set to ' + radius + ' meters. Click a map link to open.');
+    }
+
+    // Initialize links on page load with default radius
+    window.addEventListener('DOMContentLoaded', () => {
+      updateLinks();
+    });
+  </script>
 </body>
 </html>
