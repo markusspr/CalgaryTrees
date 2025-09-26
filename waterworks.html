@@ -42,7 +42,12 @@
       fetch(url)
         .then(resp => resp.json())
         .then(data => {
-          if (!Array.isArray(data)) return;
+          if (!Array.isArray(data)) {
+            console.error("API returned error:", data);
+            return;
+          }
+          console.log(data);
+          
           data.forEach(asset => {
             if (asset.location && asset.location.coordinates) {
               const [lonAsset, latAsset] = asset.location.coordinates;

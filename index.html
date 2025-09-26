@@ -28,6 +28,11 @@
       width: 80px;
       margin-right: 0.5rem;
     }
+    #radiusNote {
+      font-size: 0.9rem;
+      color: #555;
+      margin-left: 0.5rem;
+    }
   </style>
 </head>
 <body>
@@ -42,20 +47,20 @@
     <p>Set the search radius (meters) for maps:</p>
     <input type="number" id="radiusInput" value="250">
     <button onclick="updateLinks()">Apply Radius</button>
+    <span id="radiusNote">Current radius: 250 m</span>
     <p>Use the navigation bar to explore the maps.</p>
   </div>
 
   <script>
-    // Update the map links with the selected radius
     function updateLinks() {
       const radius = parseInt(document.getElementById('radiusInput').value) || 250;
       document.getElementById('linkTrees').href = `trees.html?radius=${radius}`;
       document.getElementById('linkBench').href = `bench.html?radius=${radius}`;
       document.getElementById('linkWaterworks').href = `waterworks.html?radius=${radius}`;
-      alert('Radius set to ' + radius + ' meters. Click a map link to open.');
+      document.getElementById('radiusNote').textContent = `Current radius: ${radius} m`;
     }
 
-    // Initialize links on page load with default radius
+    // Initialize links and note on page load
     window.addEventListener('DOMContentLoaded', () => {
       updateLinks();
     });
