@@ -1,15 +1,13 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Calgary Bench Map</title>
+  <title>Calgary Waterworks Map</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
   <style>
     #map { width: 100%; height: 100vh; }
-    .bearing-arrow {
-      transform-origin: center;
-    }
+    .bearing-arrow { transform-origin: center; }
   </style>
 </head>
 <body>
@@ -18,38 +16,48 @@
   <script>
     const radius = 250; // meters
 
-    const map = L.map("map").setView([51.045, -114.071], 16); // initial fallback view
+    const map = L.map("map").setView([51.045, -114.071], 16); // fallback center
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
       attribution: "&copy; OpenStreetMap contributors"
     }).addTo(map);
 
-    // Function to fetch and display trees
-    function loadTrees(lat, lon) {
-      const url = `https://data.calgary.ca/resource/ikeb-n5bc.json?$$app_token=8Y6BJoOEjSnxgyvODpDnOR5Yj&$where=within_circle(point, ${lat}, ${lon}, ${radius})`;
-      
+    const assetTypes = {
+      "DRINKING FOUNTAIN": "blue",
+      "HOSE BIB": "green",
+      "WASHROOM": "orange",
+      "DECORATIVE FOUNTAIN": "purple",
+      "DOGGIE FOUNTAIN": "cyan",
+      "OUTDOOR SHOWER": "pink",
+      "SHOWER": "red"
+    };
+
+    // Fetch and display Waterworks assets
+    function loadWaterworks(lat, lon) {
+      const typesArray = Object.keys(assetTypes).map(t => `'${t}'`).join(",");
+      const whereClause = `asset_type IN (${typesArray}) AND within_circle(location, ${lat}, ${lon}, ${radius})`;
+      const url = `https://data.calgary.ca/resource/jjkg-kv4n.json?$$app_token=8Y6BJoOEjSnxgyvODpDnOR5Yj&$where=${encodeURIComponent(whereClause)}`;
+
       fetch(url)
         .then(resp => resp.json())
         .then(data => {
-          if (!Array.isArray(data)) {
-            console.error("API returned error:", data);
-            return;
-          }
-          data.forEach(tree => {
-            if (tree.point && tree.point.coordinates) {
-              const [treeLon, treeLat] = tree.point.coordinates;
-              L.circleMarker([treeLat, treeLon], {
+          if (!Array.isArray(data)) return;
+          data.forEach(asset => {
+            if (asset.location && asset.location.coordinates) {
+              const [lonAsset, latAsset] = asset.location.coordinates;
+              const color = assetTypes[asset.asset_type] || "gray";
+
+              L.circleMarker([latAsset, lonAsset], {
                 radius: 5,
-                color: "green",
+                color,
                 fillOpacity: 0.7
               }).addTo(map)
                 .bindPopup(`
-                  <b>Public Seat</b><br>
-                 Type Description: ${tree.type_description || "N/A"}<br>
-                 Dedication: ${tree.dedication || "N/A"}<br>
-                  Orientation: ${tree.orientation || "N/A"}<br>
-                 Finish Type: ${tree.finish_type || "N/A"}<br>
+                  <b>${asset.asset_type}</b><br>
+                  Asset ID: ${asset.asset_id || "N/A"}<br>
+                  Status: ${asset.status || "N/A"}<br>
+                  Location: ${asset.location_description || "N/A"}
                 `);
             }
           });
@@ -63,11 +71,10 @@
         pos => {
           const userLat = pos.coords.latitude;
           const userLon = pos.coords.longitude;
-          const heading = pos.coords.heading; // in degrees if available
+          const heading = pos.coords.heading;
 
           let userIcon;
           if (heading !== null && !isNaN(heading)) {
-            // Create a rotated arrow icon for heading
             userIcon = L.divIcon({
               className: 'bearing-arrow',
               html: `<svg width="30" height="30" viewBox="0 0 30 30">
@@ -77,7 +84,6 @@
               iconAnchor: [15, 15]
             });
           } else {
-            // default marker if no heading
             userIcon = L.icon({
               iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
               iconSize: [25, 41],
@@ -92,19 +98,19 @@
 
           map.setView([userLat, userLon], 16);
 
-          // Fetch trees around current location
-          loadTrees(userLat, userLon);
+          // Fetch Waterworks assets around current location
+          loadWaterworks(userLat, userLon);
         },
         err => {
           console.warn("Geolocation failed:", err.message);
-          // fallback: load trees around default map center
-          loadTrees(51.045, -114.071);
+          // fallback: load assets around default map center
+          loadWaterworks(51.045, -114.071);
         },
         { enableHighAccuracy: true }
       );
     } else {
-      // fallback: load trees around default map center
-      loadTrees(51.045, -114.071);
+      // fallback: load assets around default map center
+      loadWaterworks(51.045, -114.071);
     }
   </script>
 </body>
