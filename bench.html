@@ -28,7 +28,7 @@
 
     // Function to fetch and display trees
     function loadTrees(lat, lon) {
-      const url = `https://data.calgary.ca/resource/ikeb-n5bc.json?$$app_token=8Y6BJoOEjSnxgyvODpDnOR5Yj&$where=within_circle(point, ${lat}, ${lon}, ${radius})`;
+      const url = `https://data.calgary.ca/resource/ikeb-n5bc.json?$$app_token=8Y6BJoOEjSnxgyvODpDnOR5Yj&$where=within_circle(point, ${lat}, ${lon}, ${radius})&$limit=10000`;
       
       fetch(url)
         .then(resp => resp.json())
